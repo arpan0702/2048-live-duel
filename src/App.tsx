@@ -88,7 +88,7 @@ export default function App() {
     init();
   }, []);
 
-  // Register Android Hardware Back Button and Background Grace Timeout
+  // Register Android Hardware Back Button
   useEffect(() => {
     const unregisterBack = nativeBridge.registerBackButton(() => {
       if (view === 'game') {
@@ -96,16 +96,10 @@ export default function App() {
       }
     });
 
-    nativeBridge.setBackgroundGraceTimeout(() => {
-      if (view === 'game' && currentRoom && currentRoom.status === 'active') {
-        multiplayer.abandonMatch();
-      }
-    });
-
     return () => {
       unregisterBack();
     };
-  }, [view, currentRoom]);
+  }, [view]);
 
   // Subscribe to multiplayer events
   useEffect(() => {

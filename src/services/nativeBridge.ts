@@ -32,13 +32,6 @@ class NativeBridgeService {
     } catch {
       // Web fallback
     }
-
-    // Web visibility change fallback
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', () => {
-        this.handleAppStateChange(document.visibilityState === 'visible');
-      });
-    }
   }
 
   private handleAppStateChange(isActive: boolean) {
