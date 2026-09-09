@@ -128,6 +128,21 @@ class MultiplayerService {
       localStorage.setItem(`room_${roomCode}`, JSON.stringify(newRoom));
     } catch {}
 
+    // Sync with Supabase rooms table if configured
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('rooms').insert({
+          room_code: roomCode,
+          status: 'waiting',
+          player1_id: host.id,
+          player1_score: 0,
+          player2_score: 0,
+        });
+      } catch (err) {
+        console.warn('Supabase createRoom fallback:', err);
+      }
+    }
+
     await this.setupChannels(roomCode);
 
     // Host periodically announces room state so joining devices receive it immediately
@@ -236,6 +251,21 @@ class MultiplayerService {
     try {
       localStorage.setItem(`room_${cleanCode}`, JSON.stringify(room));
     } catch {}
+
+    // Sync with Supabase rooms table if configured
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase
+          .from('rooms')
+          .update({
+            status: 'active',
+            player2_id: guest.id,
+          })
+          .eq('room_code', cleanCode);
+      } catch (err) {
+        console.warn('Supabase joinRoom fallback:', err);
+      }
+    }
 
     // Announce to host and peers that guest joined
     this.broadcastMessage({
@@ -736,7 +766,7 @@ class MultiplayerService {
   /**
    * Finish match and record scores
    */
-  public finishMatch(winnerId: string | null, reason: string) {
+  public async finishMatch(winnerId: string | null, reason: string) {
     if (!this.currentRoom || this.currentRoom.status === 'completed') return;
 
     this.currentRoom.status = 'completed';
@@ -768,6 +798,23 @@ class MultiplayerService {
         this.currentRoom.player2.score,
         this.currentRoom.player2.highestTile
       );
+    }
+
+    // Sync room completion to Supabase rooms table if configured
+    if (isSupabaseConfigured && supabase && this.currentRoom) {
+      try {
+        await supabase
+          .from('rooms')
+          .update({
+            status: 'completed',
+            winner_id: winnerId,
+            player1_score: Number(this.currentRoom.player1.score || '0'),
+            player2_score: Number(this.currentRoom.player2?.score || '0'),
+          })
+          .eq('room_code', this.currentRoom.roomCode);
+      } catch (err) {
+        console.warn('Supabase finishMatch fallback:', err);
+      }
     }
 
     this.cleanupTimers();

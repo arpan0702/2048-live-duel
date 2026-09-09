@@ -1,4 +1,5 @@
 import type { LeaderboardUser } from '../types/game';
+import { supabase, isSupabaseConfigured } from './supabase';
 
 const INITIAL_SEED_LEADERBOARD: LeaderboardUser[] = [
   {
@@ -62,6 +63,30 @@ class LeaderboardService {
   }
 
   public async getTopLeaderboard(): Promise<LeaderboardUser[]> {
+    // 1. Try fetching from Supabase if configured
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, username, all_time_high_score, highest_tile_achieved, updated_at')
+          .order('all_time_high_score', { ascending: false })
+          .limit(25);
+
+        if (!error && data && data.length > 0) {
+          return data.map((u: any) => ({
+            id: u.id,
+            username: u.username,
+            all_time_high_score: (u.all_time_high_score ?? '0').toString(),
+            highest_tile_achieved: (u.highest_tile_achieved ?? '2').toString(),
+            updated_at: u.updated_at,
+          }));
+        }
+      } catch (err) {
+        console.warn('Supabase leaderboard fetch fallback to local:', err);
+      }
+    }
+
+    // 2. Fallback to local persistent leaderboard
     const scores = this.getLocalScores();
     return scores.sort((a, b) => {
       const aScore = BigInt(a.all_time_high_score || '0');
@@ -78,8 +103,37 @@ class LeaderboardService {
     score: string,
     highestTile: string
   ): Promise<void> {
+    // 1. Submit to Supabase if configured
+    if (isSupabaseConfigured && supabase) {
+      try {
+        // Ensure user exists in users table
+        await supabase
+          .from('users')
+          .upsert(
+            {
+              id: userId,
+              username,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'id' }
+          );
+
+        // Call atomic submit_match_score RPC
+        await supabase.rpc('submit_match_score', {
+          p_user_id: userId,
+          p_score: Number(score),
+          p_tile: Number(highestTile),
+        });
+      } catch (err) {
+        console.warn('Supabase submitScore fallback:', err);
+      }
+    }
+
+    // 2. Update local persistent storage
     const scores = this.getLocalScores();
-    const existingIndex = scores.findIndex((u) => u.id === userId || u.username.toLowerCase() === username.toLowerCase());
+    const existingIndex = scores.findIndex(
+      (u) => u.id === userId || u.username.toLowerCase() === username.toLowerCase()
+    );
 
     const newScoreBig = BigInt(score || '0');
     const newTileBig = BigInt(highestTile || '2');
@@ -106,7 +160,9 @@ class LeaderboardService {
       });
     }
 
-    localStorage.setItem(LEADERBOARD_STORAGE_KEY, JSON.stringify(scores));
+    try {
+      localStorage.setItem(LEADERBOARD_STORAGE_KEY, JSON.stringify(scores));
+    } catch {}
   }
 }
 
