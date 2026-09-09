@@ -16,6 +16,7 @@ export type GameMode = 'sudden_death' | 'blitz_3m' | 'blitz_5m' | 'solo_endless'
 export interface UserProfile {
   id: string; // UUID
   username: string;
+  password?: string;
   allTimeHighScore: string; // Stored as string for BigInt/numeric serialization
   highestTileAchieved: string;
 }

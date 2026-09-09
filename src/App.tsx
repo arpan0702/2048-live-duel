@@ -16,6 +16,7 @@ import { Lobby } from './components/Lobby';
 import { MatchResultModal } from './components/MatchResultModal';
 import { AbandonModal } from './components/AbandonModal';
 import { LeaderboardModal } from './components/LeaderboardModal';
+import { AuthModal } from './components/AuthModal';
 
 export default function App() {
   // User Profile
@@ -38,6 +39,10 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(sound.getIsMuted());
 
   // Modal States
+  const [authModal, setAuthModal] = useState<{ isOpen: boolean; mode: 'login' | 'signup' }>({
+    isOpen: false,
+    mode: 'login',
+  });
   const [isAbandonModalOpen, setIsAbandonModalOpen] = useState(false);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
   const [matchResult, setMatchResult] = useState<{
@@ -50,43 +55,61 @@ export default function App() {
     reason: '',
   });
 
-  // Load identity and handle URL join params
+  // Start fresh game board
+  const resetGame = useCallback(() => {
+    const freshGrid = initializeBoard();
+    const highest = getHighestTileOnBoard(freshGrid);
+    setGrid(freshGrid);
+    setCurrentScore(0n);
+    setCurrentHighestTile(highest);
+    setIsLocked(false);
+  }, []);
+
+  // Start multiplayer match
+  const startMultiplayerMatch = useCallback(
+    (room: RoomState) => {
+      resetGame();
+      setCurrentRoom(room);
+      setGameMode(room.mode);
+      setView('game');
+      setMatchResult({ isOpen: false, winnerId: null, reason: '' });
+    },
+    [resetGame]
+  );
+
+  // Load identity from cached session and handle URL join params
   useEffect(() => {
     async function init() {
-      let profile = await identity.loadProfile();
+      const profile = await identity.loadCachedSession();
 
       // Check if URL has ?join=XXXXXX
       const urlParams = new URLSearchParams(window.location.search);
       const joinCode = urlParams.get('join');
 
-      if (!profile) {
-        // Auto-assign starter username for effortless friction-free play
-        const defaultName = joinCode
-          ? `Challenger_${Math.floor(100 + Math.random() * 900)}`
-          : `Matrix_${Math.floor(100 + Math.random() * 900)}`;
-        const res = await identity.validateAndSetUsername(defaultName);
-        if (res.success && res.profile) {
-          profile = res.profile;
+      if (profile) {
+        setUserProfile(profile);
+
+        // Auto-join room if requested in URL
+        if (joinCode) {
+          try {
+            const room = await multiplayer.joinRoom(joinCode, profile);
+            startMultiplayerMatch(room);
+            // Clean up url
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } catch (err: any) {
+            console.warn('Auto-join failed:', err.message);
+          }
         }
-      }
-
-      setUserProfile(profile);
-
-      // Auto-join room if requested in URL
-      if (joinCode && profile) {
-        try {
-          const room = await multiplayer.joinRoom(joinCode, profile);
-          startMultiplayerMatch(room);
-          // Clean up url
-          window.history.replaceState({}, document.title, window.location.pathname);
-        } catch (err: any) {
-          console.warn('Auto-join failed:', err.message);
+      } else {
+        // If there's an invite link but user has no cached session, open auth modal
+        if (joinCode) {
+          setAuthModal({ isOpen: true, mode: 'signup' });
         }
       }
     }
 
     init();
-  }, []);
+  }, [startMultiplayerMatch]);
 
   // Register Android Hardware Back Button and 24-Hour Background Grace Timeout
   useEffect(() => {
@@ -151,28 +174,6 @@ export default function App() {
     };
   }, [waitingRoom, currentRoom]);
 
-  // Start fresh game board
-  const resetGame = useCallback(() => {
-    const freshGrid = initializeBoard();
-    const highest = getHighestTileOnBoard(freshGrid);
-    setGrid(freshGrid);
-    setCurrentScore(0n);
-    setCurrentHighestTile(highest);
-    setIsLocked(false);
-  }, []);
-
-  // Start multiplayer match
-  const startMultiplayerMatch = useCallback(
-    (room: RoomState) => {
-      resetGame();
-      setCurrentRoom(room);
-      setGameMode(room.mode);
-      setView('game');
-      setMatchResult({ isOpen: false, winnerId: null, reason: '' });
-    },
-    [resetGame]
-  );
-
   // Start solo practice
   const handleStartSolo = () => {
     resetGame();
@@ -184,7 +185,10 @@ export default function App() {
 
   // Create room handler
   const handleCreateRoom = async (mode: GameMode): Promise<RoomState> => {
-    if (!userProfile) throw new Error('Profile required.');
+    if (!userProfile) {
+      setAuthModal({ isOpen: true, mode: 'signup' });
+      throw new Error('Please log in or sign up first.');
+    }
     const room = await multiplayer.createRoom(userProfile, mode);
     setWaitingRoom(room);
     return room;
@@ -192,19 +196,37 @@ export default function App() {
 
   // Join room handler
   const handleJoinRoom = async (code: string): Promise<RoomState> => {
-    if (!userProfile) throw new Error('Profile required.');
+    if (!userProfile) {
+      setAuthModal({ isOpen: true, mode: 'signup' });
+      throw new Error('Please log in or sign up first.');
+    }
     const room = await multiplayer.joinRoom(code, userProfile);
     startMultiplayerMatch(room);
     return room;
   };
 
-  // Update Username
-  const handleUpdateUsername = async (newName: string) => {
-    const res = await identity.validateAndSetUsername(newName);
-    if (res.success && res.profile) {
-      setUserProfile(res.profile);
+  // Auth handlers
+  const handleLogout = async () => {
+    await identity.logout();
+    setUserProfile(null);
+  };
+
+  const handleAuthSuccess = async (profile: UserProfile) => {
+    setUserProfile(profile);
+    setAuthModal({ isOpen: false, mode: 'login' });
+
+    // Check if URL has ?join=XXXXXX
+    const urlParams = new URLSearchParams(window.location.search);
+    const joinCode = urlParams.get('join');
+    if (joinCode) {
+      try {
+        const room = await multiplayer.joinRoom(joinCode, profile);
+        startMultiplayerMatch(room);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (err: any) {
+        console.warn('Post-auth join failed:', err.message);
+      }
     }
-    return res;
   };
 
   // Grid Move Handler (Keyboard or Touch Swipe)
@@ -359,7 +381,8 @@ export default function App() {
         {view === 'lobby' ? (
           <Lobby
             userProfile={userProfile}
-            onUpdateUsername={handleUpdateUsername}
+            onOpenAuth={(mode) => setAuthModal({ isOpen: true, mode: mode || 'login' })}
+            onLogout={handleLogout}
             onCreateRoom={handleCreateRoom}
             onJoinRoom={handleJoinRoom}
             onStartSolo={handleStartSolo}
@@ -394,6 +417,13 @@ export default function App() {
       </footer>
 
       {/* Modals */}
+      <AuthModal
+        isOpen={authModal.isOpen}
+        initialMode={authModal.mode}
+        onClose={() => setAuthModal({ ...authModal, isOpen: false })}
+        onSuccess={handleAuthSuccess}
+      />
+
       <AbandonModal
         isOpen={isAbandonModalOpen}
         onConfirm={handleAbandonConfirm}

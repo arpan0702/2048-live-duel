@@ -1,11 +1,11 @@
 import { Preferences } from '@capacitor/preferences';
 import type { UserProfile } from '../types/game';
+import { supabase, isSupabaseConfigured } from './supabase';
+import { leaderboard } from './leaderboard';
 
 const STORAGE_KEYS = {
-  USER_ID: 'user_session_uuid',
-  USERNAME: 'user_chosen_name',
-  HIGH_SCORE: 'user_high_score',
-  HIGHEST_TILE: 'user_highest_tile',
+  ACTIVE_SESSION: 'user_active_session',
+  REGISTERED_ACCOUNTS: 'registered_user_accounts',
 };
 
 // Generate UUID v4
@@ -20,6 +20,15 @@ export function generateUUID(): string {
   });
 }
 
+export interface StoredAccount {
+  id: string;
+  username: string;
+  password: string;
+  allTimeHighScore: string;
+  highestTileAchieved: string;
+  createdAt: string;
+}
+
 class IdentityService {
   private currentProfile: UserProfile | null = null;
 
@@ -27,9 +36,7 @@ class IdentityService {
     try {
       const { value } = await Preferences.get({ key });
       if (value !== null) return value;
-    } catch {
-      // Fall back to localStorage
-    }
+    } catch {}
     if (typeof localStorage !== 'undefined') {
       return localStorage.getItem(key);
     }
@@ -39,33 +46,81 @@ class IdentityService {
   private async setStorageItem(key: string, value: string): Promise<void> {
     try {
       await Preferences.set({ key, value });
-    } catch {
-      // Fall back
-    }
+    } catch {}
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(key, value);
     }
   }
 
-  /**
-   * Load existing profile from storage
-   */
-  public async loadProfile(): Promise<UserProfile | null> {
-    const id = await this.getStorageItem(STORAGE_KEYS.USER_ID);
-    const username = await this.getStorageItem(STORAGE_KEYS.USERNAME);
-    const allTimeHighScore = (await this.getStorageItem(STORAGE_KEYS.HIGH_SCORE)) || '0';
-    const highestTileAchieved = (await this.getStorageItem(STORAGE_KEYS.HIGHEST_TILE)) || '2';
+  private async removeStorageItem(key: string): Promise<void> {
+    try {
+      await Preferences.remove({ key });
+    } catch {}
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(key);
+    }
+  }
 
-    if (id && username) {
+  private getLocalAccounts(): Record<string, StoredAccount> {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.REGISTERED_ACCOUNTS);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private saveLocalAccounts(accounts: Record<string, StoredAccount>): void {
+    try {
+      localStorage.setItem(STORAGE_KEYS.REGISTERED_ACCOUNTS, JSON.stringify(accounts));
+    } catch {}
+  }
+
+  /**
+   * Auto-login user from cached session data in storage
+   */
+  public async loadCachedSession(): Promise<UserProfile | null> {
+    const rawSession = await this.getStorageItem(STORAGE_KEYS.ACTIVE_SESSION);
+    if (!rawSession) return null;
+
+    try {
+      const cached = JSON.parse(rawSession);
+      if (!cached || !cached.username) return null;
+
+      // Try fetching latest scores from Supabase if available
+      let allTimeHighScore = cached.allTimeHighScore || '0';
+      let highestTileAchieved = cached.highestTileAchieved || '2';
+
+      if (isSupabaseConfigured && supabase && cached.id) {
+        try {
+          const { data } = await supabase
+            .from('users')
+            .select('all_time_high_score, highest_tile_achieved')
+            .eq('id', cached.id)
+            .single();
+          if (data) {
+            const dbHigh = (data.all_time_high_score ?? '0').toString();
+            const dbTile = (data.highest_tile_achieved ?? '2').toString();
+            if (BigInt(dbHigh) > BigInt(allTimeHighScore)) allTimeHighScore = dbHigh;
+            if (BigInt(dbTile) > BigInt(highestTileAchieved)) highestTileAchieved = dbTile;
+          }
+        } catch {}
+      }
+
       this.currentProfile = {
-        id,
-        username,
+        id: cached.id,
+        username: cached.username,
+        password: cached.password,
         allTimeHighScore,
         highestTileAchieved,
       };
+
+      // Refresh cache with latest values
+      await this.setStorageItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(this.currentProfile));
       return this.currentProfile;
+    } catch {
+      return null;
     }
-    return null;
   }
 
   public getProfile(): UserProfile | null {
@@ -73,58 +128,167 @@ class IdentityService {
   }
 
   /**
-   * Check if username is already registered to a different device
-   * (In local mock mode, uses registered_users registry in localStorage)
+   * Sign up a new user account with username and password
    */
-  public async validateAndSetUsername(username: string): Promise<{ success: boolean; error?: string; profile?: UserProfile }> {
+  public async signUp(
+    username: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string; profile?: UserProfile }> {
     const cleanUsername = username.trim();
+    const cleanPassword = password.trim();
+
     if (!cleanUsername || cleanUsername.length < 3) {
       return { success: false, error: 'Username must be at least 3 characters.' };
     }
     if (cleanUsername.length > 16) {
       return { success: false, error: 'Username cannot exceed 16 characters.' };
     }
-
-    let id = await this.getStorageItem(STORAGE_KEYS.USER_ID);
-    if (!id) {
-      id = generateUUID();
-      await this.setStorageItem(STORAGE_KEYS.USER_ID, id);
+    if (!cleanPassword || cleanPassword.length < 3) {
+      return { success: false, error: 'Password must be at least 3 characters.' };
     }
 
-    // Check registry for conflict
-    const registryRaw = localStorage.getItem('known_registered_users') || '{}';
-    let registry: Record<string, { id: string; username: string }> = {};
-    try {
-      registry = JSON.parse(registryRaw);
-    } catch {
-      registry = {};
+    const key = cleanUsername.toLowerCase();
+    const accounts = this.getLocalAccounts();
+
+    // Check local accounts registry
+    if (accounts[key]) {
+      return { success: false, error: `Username "${cleanUsername}" is already taken. Please Log In.` };
     }
 
-    const existingUserId = registry[cleanUsername.toLowerCase()]?.id;
-    if (existingUserId && existingUserId !== id) {
-      return {
-        success: false,
-        error: `Username "${cleanUsername}" is already taken by another player. Please choose another.`,
-      };
+    // Check Supabase if configured
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data } = await supabase
+          .from('users')
+          .select('id')
+          .ilike('username', cleanUsername)
+          .maybeSingle();
+
+        if (data) {
+          return { success: false, error: `Username "${cleanUsername}" is already taken. Please Log In.` };
+        }
+      } catch {}
     }
 
-    // Save registration
-    registry[cleanUsername.toLowerCase()] = { id, username: cleanUsername };
-    localStorage.setItem('known_registered_users', JSON.stringify(registry));
+    const id = generateUUID();
+    const newAccount: StoredAccount = {
+      id,
+      username: cleanUsername,
+      password: cleanPassword,
+      allTimeHighScore: '0',
+      highestTileAchieved: '2',
+      createdAt: new Date().toISOString(),
+    };
 
-    const allTimeHighScore = (await this.getStorageItem(STORAGE_KEYS.HIGH_SCORE)) || '0';
-    const highestTileAchieved = (await this.getStorageItem(STORAGE_KEYS.HIGHEST_TILE)) || '2';
+    // Save locally
+    accounts[key] = newAccount;
+    this.saveLocalAccounts(accounts);
 
-    await this.setStorageItem(STORAGE_KEYS.USERNAME, cleanUsername);
+    // Save to Supabase if configured
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('users').insert({
+          id,
+          username: cleanUsername,
+          password: cleanPassword,
+          all_time_high_score: 0,
+          highest_tile_achieved: 2,
+        });
+      } catch (err) {
+        console.warn('Supabase signUp insert fallback:', err);
+      }
+    }
 
     this.currentProfile = {
       id,
       username: cleanUsername,
-      allTimeHighScore,
-      highestTileAchieved,
+      password: cleanPassword,
+      allTimeHighScore: '0',
+      highestTileAchieved: '2',
     };
 
+    // Cache active session for auto-login
+    await this.setStorageItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(this.currentProfile));
+
+    // Register initial record in Hall of Fame
+    leaderboard.submitScore(id, cleanUsername, '0', '2');
+
     return { success: true, profile: this.currentProfile };
+  }
+
+  /**
+   * Log in existing user with username and password
+   */
+  public async login(
+    username: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string; profile?: UserProfile }> {
+    const cleanUsername = username.trim();
+    const cleanPassword = password.trim();
+
+    if (!cleanUsername || !cleanPassword) {
+      return { success: false, error: 'Please enter both username and password.' };
+    }
+
+    const key = cleanUsername.toLowerCase();
+    const accounts = this.getLocalAccounts();
+    let account = accounts[key];
+
+    // Check Supabase if not found locally
+    if (!account && isSupabaseConfigured && supabase) {
+      try {
+        const { data } = await supabase
+          .from('users')
+          .select('id, username, password, all_time_high_score, highest_tile_achieved')
+          .ilike('username', cleanUsername)
+          .maybeSingle();
+
+        if (data) {
+          account = {
+            id: data.id,
+            username: data.username,
+            password: data.password || cleanPassword,
+            allTimeHighScore: (data.all_time_high_score ?? '0').toString(),
+            highestTileAchieved: (data.highest_tile_achieved ?? '2').toString(),
+            createdAt: new Date().toISOString(),
+          };
+          accounts[key] = account;
+          this.saveLocalAccounts(accounts);
+        }
+      } catch {}
+    }
+
+    if (!account) {
+      return {
+        success: false,
+        error: `Account "${cleanUsername}" not found. Please Sign Up first.`,
+      };
+    }
+
+    // Verify password
+    if (account.password && account.password !== cleanPassword) {
+      return { success: false, error: 'Incorrect password. Please try again.' };
+    }
+
+    this.currentProfile = {
+      id: account.id,
+      username: account.username,
+      password: account.password,
+      allTimeHighScore: account.allTimeHighScore,
+      highestTileAchieved: account.highestTileAchieved,
+    };
+
+    // Cache active session for auto-login
+    await this.setStorageItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(this.currentProfile));
+    return { success: true, profile: this.currentProfile };
+  }
+
+  /**
+   * Log out and clear cached session
+   */
+  public async logout(): Promise<void> {
+    this.currentProfile = null;
+    await this.removeStorageItem(STORAGE_KEYS.ACTIVE_SESSION);
   }
 
   /**
@@ -138,7 +302,6 @@ class IdentityService {
     const newScore = BigInt(score || '0');
     if (newScore > currentHigh) {
       this.currentProfile.allTimeHighScore = newScore.toString();
-      await this.setStorageItem(STORAGE_KEYS.HIGH_SCORE, this.currentProfile.allTimeHighScore);
       updated = true;
     }
 
@@ -146,8 +309,29 @@ class IdentityService {
     const newTile = BigInt(tile || '2');
     if (newTile > currentTile) {
       this.currentProfile.highestTileAchieved = newTile.toString();
-      await this.setStorageItem(STORAGE_KEYS.HIGHEST_TILE, this.currentProfile.highestTileAchieved);
       updated = true;
+    }
+
+    if (updated) {
+      // Update local accounts registry
+      const accounts = this.getLocalAccounts();
+      const key = this.currentProfile.username.toLowerCase();
+      if (accounts[key]) {
+        accounts[key].allTimeHighScore = this.currentProfile.allTimeHighScore;
+        accounts[key].highestTileAchieved = this.currentProfile.highestTileAchieved;
+        this.saveLocalAccounts(accounts);
+      }
+
+      // Update active session cache
+      await this.setStorageItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(this.currentProfile));
+
+      // Sync to Leaderboard
+      leaderboard.submitScore(
+        this.currentProfile.id,
+        this.currentProfile.username,
+        this.currentProfile.allTimeHighScore,
+        this.currentProfile.highestTileAchieved
+      );
     }
 
     return updated ? { ...this.currentProfile } : this.currentProfile;

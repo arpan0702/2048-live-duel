@@ -6,6 +6,7 @@
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   username text unique not null,
+  password text default '',
   all_time_high_score numeric not null default 0,
   highest_tile_achieved numeric not null default 2,
   created_at timestamptz default now(),
