@@ -2,7 +2,8 @@
 
 A cross-platform, real-time multiplayer version of 2048 built on a classic $4 \times 4$ grid with no artificial win triggers. Reaching the 2048 tile does not trigger a victory screen; players continue merging toward the maximum mathematical limits of the grid ($131,072$).
 
-🎮 **Play Live Now**: [https://arpan0702.github.io/2048-live-duel/](https://arpan0702.github.io/2048-live-duel/)  
+🎮 **Play Live on Vercel**: [https://2048-live-duel.vercel.app/](https://2048-live-duel.vercel.app/)  
+🌐 **Play Live on GitHub Pages**: [https://arpan0702.github.io/2048-live-duel/](https://arpan0702.github.io/2048-live-duel/)  
 📦 **Repository**: [https://github.com/arpan0702/2048-live-duel](https://github.com/arpan0702/2048-live-duel)
 
 ---
