@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Swords, Zap, Clock, Trophy, Copy, Check, ExternalLink, Play, User, Edit3, ShieldAlert } from 'lucide-react';
+import { Swords, Zap, Clock, Trophy, Copy, Check, ExternalLink, Play, User, Edit3, ShieldAlert, Share2 } from 'lucide-react';
 import type { GameMode, RoomState, UserProfile } from '../types/game';
 import { formatScore, formatTileValue, getTileVisual } from '../engine/gameEngine';
 
@@ -30,6 +30,7 @@ export const Lobby: React.FC<LobbyProps> = ({
   const [isCreating, setIsCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Username editing state
   const [isEditingUsername, setIsEditingUsername] = useState(!userProfile);
@@ -92,6 +93,14 @@ export const Lobby: React.FC<LobbyProps> = ({
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
+  const handleCopyLink = () => {
+    if (!waitingRoom) return;
+    const url = `${window.location.origin}${window.location.pathname}?join=${waitingRoom.roomCode}`;
+    navigator.clipboard.writeText(url);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
   const handleOpenPlayer2Window = () => {
     if (!waitingRoom) return;
     const url = `${window.location.origin}${window.location.pathname}?join=${waitingRoom.roomCode}`;
@@ -127,6 +136,16 @@ export const Lobby: React.FC<LobbyProps> = ({
             <span className="text-xs text-amber-300 font-medium">
               Mode: {waitingRoom.mode === 'sudden_death' ? '⚡ Sudden Death' : waitingRoom.mode === 'blitz_3m' ? '⏱️ Blitz (3 Min)' : '⏱️ Blitz (5 Min)'}
             </span>
+
+            {/* Direct Invite Link Button */}
+            <button
+              type="button"
+              onClick={handleCopyLink}
+              className="w-full mt-2 py-2 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              {copiedLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Share2 className="w-4 h-4" />}
+              <span>{copiedLink ? 'Direct Link Copied!' : 'Copy Invite Link (Share to Phone/Friend)'}</span>
+            </button>
           </div>
 
           <div className="flex items-center justify-center gap-2 text-xs font-mono text-stone-400 mb-6 animate-pulse">
@@ -367,9 +386,16 @@ export const Lobby: React.FC<LobbyProps> = ({
             disabled={isJoining}
             className="bg-stone-800 hover:bg-stone-700 disabled:opacity-50 text-stone-200 font-bold px-4 py-2.5 rounded-xl text-xs sm:text-sm transition-colors cursor-pointer"
           >
-            {isJoining ? 'Joining...' : 'Join Duel'}
+            {isJoining ? 'Connecting...' : 'Join Duel'}
           </button>
         </form>
+
+        {isJoining && (
+          <div className="flex items-center justify-center gap-2 text-xs font-mono text-amber-400 animate-pulse bg-amber-950/40 border border-amber-800/40 p-2.5 rounded-xl">
+            <div className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            <span>Finding room #{joinCodeInput.trim().toUpperCase().replace('#', '')} across live network...</span>
+          </div>
+        )}
 
         {/* Solo Practice Button */}
         <div className="pt-2 border-t border-stone-800/80">

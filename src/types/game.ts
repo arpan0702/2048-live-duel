@@ -60,6 +60,8 @@ export interface ScoreUpdatePayload {
 
 export type RealtimeMessage =
   | { type: 'join_room'; roomCode: string; player: PlayerState }
+  | { type: 'request_room_state'; roomCode: string; senderId: string }
+  | { type: 'room_state'; roomCode: string; room: RoomState }
   | { type: 'player_ready'; roomCode: string; userId: string }
   | { type: 'start_match'; roomCode: string; mode: GameMode; startTime: number }
   | { type: 'score_update'; roomCode: string; payload: ScoreUpdatePayload }
