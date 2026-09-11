@@ -26,7 +26,7 @@ export const Lobby: React.FC<LobbyProps> = ({
   waitingRoom,
   onCancelWaiting,
 }) => {
-  const [selectedMode, setSelectedMode] = useState<GameMode>('sudden_death');
+  const [selectedMode, setSelectedMode] = useState<GameMode>('classic_duel');
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -120,7 +120,7 @@ export const Lobby: React.FC<LobbyProps> = ({
               </button>
             </div>
             <span className="text-xs text-amber-300 font-medium">
-              Mode: {waitingRoom.mode === 'sudden_death' ? '⚡ Sudden Death' : waitingRoom.mode === 'blitz_3m' ? '⏱️ Blitz (3 Min)' : '⏱️ Blitz (5 Min)'}
+              Mode: {waitingRoom.mode === 'classic_duel' ? '⚔️ Classic Duel (Normal)' : waitingRoom.mode === 'sudden_death' ? '⚡ Sudden Death' : waitingRoom.mode === 'blitz_3m' ? '⏱️ Blitz (3 Min)' : '⏱️ Blitz (5 Min)'}
             </span>
 
             {/* Direct Invite Link Button */}
@@ -271,7 +271,26 @@ export const Lobby: React.FC<LobbyProps> = ({
           <label className="text-xs font-bold uppercase tracking-wider text-stone-400 block mb-2">
             Select Duel Mode
           </label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedMode('classic_duel')}
+              className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                selectedMode === 'classic_duel'
+                  ? 'bg-amber-500/20 border-amber-500 text-white shadow-md'
+                  : 'bg-stone-950 border-stone-800 text-stone-400 hover:border-stone-700'
+              }`}
+            >
+              <div className="flex items-center gap-1 text-amber-400 font-bold text-xs">
+                <Swords className="w-3.5 h-3.5 text-amber-400" />
+                <span>Classic Duel</span>
+                <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono">NORMAL</span>
+              </div>
+              <span className="text-[10px] text-stone-400 mt-1 leading-tight">
+                Both play endless. Lockout enables live viewing opponent!
+              </span>
+            </button>
+
             <button
               type="button"
               onClick={() => setSelectedMode('sudden_death')}
@@ -286,7 +305,7 @@ export const Lobby: React.FC<LobbyProps> = ({
                 <span>Sudden Death</span>
               </div>
               <span className="text-[10px] text-stone-400 mt-1 leading-tight">
-                Lockout triggers 60s countdown
+                First lockout starts 60s countdown to beat score
               </span>
             </button>
 
@@ -304,7 +323,7 @@ export const Lobby: React.FC<LobbyProps> = ({
                 <span>Blitz 3 Min</span>
               </div>
               <span className="text-[10px] text-stone-400 mt-1 leading-tight">
-                High score at 3:00 wins
+                High score at 3:00 wins match
               </span>
             </button>
 
@@ -322,7 +341,7 @@ export const Lobby: React.FC<LobbyProps> = ({
                 <span>Blitz 5 Min</span>
               </div>
               <span className="text-[10px] text-stone-400 mt-1 leading-tight">
-                High score at 5:00 wins
+                High score at 5:00 wins match
               </span>
             </button>
           </div>

@@ -4,6 +4,8 @@ import {
   initializeBoard,
   moveGrid,
   getHighestTileOnBoard,
+  serializeGrid,
+  deserializeGrid,
 } from './engine/gameEngine';
 import { identity, generateUUID } from './services/identity';
 import { multiplayer } from './services/multiplayer';
@@ -24,11 +26,12 @@ export default function App() {
 
   // View & Game State
   const [view, setView] = useState<'lobby' | 'game'>('lobby');
-  const [gameMode, setGameMode] = useState<GameMode>('sudden_death');
+  const [gameMode, setGameMode] = useState<GameMode>('classic_duel');
   const [grid, setGrid] = useState<Grid>(() => initializeBoard());
   const [currentScore, setCurrentScore] = useState<bigint>(0n);
   const [currentHighestTile, setCurrentHighestTile] = useState<bigint>(2n);
   const [isLocked, setIsLocked] = useState(false);
+  const [isSpectatingOpponent, setIsSpectatingOpponent] = useState(false);
 
   // Multiplayer State
   const [currentRoom, setCurrentRoom] = useState<RoomState | null>(null);
@@ -63,18 +66,28 @@ export default function App() {
     setCurrentScore(0n);
     setCurrentHighestTile(highest);
     setIsLocked(false);
+    setIsSpectatingOpponent(false);
   }, []);
 
   // Start multiplayer match
   const startMultiplayerMatch = useCallback(
     (room: RoomState) => {
-      resetGame();
+      const freshGrid = initializeBoard();
+      const highest = getHighestTileOnBoard(freshGrid);
+      setGrid(freshGrid);
+      setCurrentScore(0n);
+      setCurrentHighestTile(highest);
+      setIsLocked(false);
+      setIsSpectatingOpponent(false);
       setCurrentRoom(room);
       setGameMode(room.mode);
       setView('game');
       setMatchResult({ isOpen: false, winnerId: null, reason: '' });
+
+      // Broadcast initial starting grid to opponent
+      multiplayer.sendScoreUpdate('0', highest.toString(), false, serializeGrid(freshGrid));
     },
-    [resetGame]
+    []
   );
 
   // Load identity from cached session and handle URL join params
@@ -155,6 +168,7 @@ export default function App() {
         winnerId,
         reason,
       });
+      setIsSpectatingOpponent(false);
     });
 
     const unsubSuddenDeath = multiplayer.onSuddenDeath(() => {
@@ -259,8 +273,9 @@ export default function App() {
       }
 
       // Multiplayer synchronization
+      const serialized = serializeGrid(result.grid);
       if (currentRoom && currentRoom.status === 'active') {
-        multiplayer.sendScoreUpdate(newScore.toString(), newHighest.toString(), result.isLocked);
+        multiplayer.sendScoreUpdate(newScore.toString(), newHighest.toString(), result.isLocked, serialized);
       }
 
       // Board lockout handling
@@ -269,7 +284,9 @@ export default function App() {
         sound.playLock();
 
         if (currentRoom && currentRoom.status === 'active') {
-          multiplayer.sendPlayerLocked(newScore.toString(), newHighest.toString());
+          multiplayer.sendPlayerLocked(newScore.toString(), newHighest.toString(), serialized);
+          // Enable spectator live-view of opponent if opponent is still playing
+          setIsSpectatingOpponent(true);
         } else {
           // Solo mode game over
           leaderboard.submitScore(
@@ -292,6 +309,7 @@ export default function App() {
   // Quit / Abandon Match
   const handleAbandonConfirm = () => {
     setIsAbandonModalOpen(false);
+    setIsSpectatingOpponent(false);
     if (currentRoom) {
       multiplayer.abandonMatch();
     }
@@ -302,6 +320,7 @@ export default function App() {
   // Rematch / Play Again
   const handlePlayAgain = () => {
     setMatchResult({ isOpen: false, winnerId: null, reason: '' });
+    setIsSpectatingOpponent(false);
     resetGame();
     if (currentRoom) {
       // Re-create a new room with same mode
@@ -318,6 +337,7 @@ export default function App() {
 
   const handleReturnLobby = () => {
     setMatchResult({ isOpen: false, winnerId: null, reason: '' });
+    setIsSpectatingOpponent(false);
     if (currentRoom) {
       multiplayer.leaveRoom();
     }
@@ -336,6 +356,7 @@ export default function App() {
     score: currentScore.toString(),
     highestTile: currentHighestTile.toString(),
     isLocked,
+    grid: serializeGrid(grid),
   };
 
   let opponentPlayerState: PlayerState | undefined = undefined;
@@ -404,9 +425,21 @@ export default function App() {
                 const nextMuted = sound.toggleMute();
                 setIsMuted(nextMuted);
               }}
+              isSpectatingOpponent={isSpectatingOpponent}
+              onToggleSpectate={() => setIsSpectatingOpponent((prev) => !prev)}
             />
 
-            <GameBoard grid={grid} onMove={handleMove} disabled={isLocked || matchResult.isOpen} />
+            <GameBoard
+              grid={
+                isSpectatingOpponent && opponentPlayerState?.grid
+                  ? deserializeGrid(opponentPlayerState.grid)
+                  : grid
+              }
+              onMove={handleMove}
+              disabled={isLocked || matchResult.isOpen || isSpectatingOpponent}
+              isSpectating={isSpectatingOpponent}
+              spectatingUsername={opponentPlayerState?.username}
+            />
           </div>
         )}
       </main>

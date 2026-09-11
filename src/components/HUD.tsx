@@ -1,5 +1,5 @@
 import React from 'react';
-import { Volume2, VolumeX, LogOut, Radio, Clock, AlertTriangle } from 'lucide-react';
+import { Volume2, VolumeX, LogOut, Radio, Clock, AlertTriangle, Eye } from 'lucide-react';
 import { formatScore, formatTileValue, getTileVisual } from '../engine/gameEngine';
 import type { GameMode, PlayerState, RoomState } from '../types/game';
 
@@ -12,6 +12,8 @@ interface HUDProps {
   onQuitClick: () => void;
   isMuted: boolean;
   onToggleMute: () => void;
+  isSpectatingOpponent?: boolean;
+  onToggleSpectate?: () => void;
 }
 
 export const HUD: React.FC<HUDProps> = ({
@@ -23,6 +25,8 @@ export const HUD: React.FC<HUDProps> = ({
   onQuitClick,
   isMuted,
   onToggleMute,
+  isSpectatingOpponent = false,
+  onToggleSpectate,
 }) => {
   const isSolo = mode === 'solo_endless' || !opponentPlayer;
 
@@ -115,6 +119,48 @@ export const HUD: React.FC<HUDProps> = ({
           <span>
             SUDDEN DEATH: {room.suddenDeathGraceRemaining}s GRACE WINDOW (
             {room.suddenDeathLockedUserId === userPlayer.userId ? 'Your board locked!' : 'Opponent locked out!'})
+          </span>
+        </div>
+      )}
+
+      {/* Spectator / Live View Banner when User is Locked Out but Opponent is still playing */}
+      {userPlayer.isLocked && opponentPlayer && !opponentPlayer.isLocked && (
+        <div className="bg-stone-900/95 border-2 border-rose-500/70 rounded-xl p-2.5 shadow-xl flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping flex-shrink-0" />
+            <div className="min-w-0 text-left">
+              <div className="text-xs font-bold text-white truncate">
+                Your board locked! {opponentPlayer.username} is still playing
+              </div>
+              <div className="text-[10px] text-stone-400 font-mono truncate">
+                {isSpectatingOpponent ? 'Currently watching opponent live' : 'Viewing your final locked board'}
+              </div>
+            </div>
+          </div>
+
+          {onToggleSpectate && (
+            <button
+              type="button"
+              onClick={onToggleSpectate}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all flex items-center gap-1.5 flex-shrink-0 cursor-pointer shadow-md ${
+                isSpectatingOpponent
+                  ? 'bg-amber-500 hover:bg-amber-400 text-stone-950 shadow-amber-500/20'
+                  : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/30 animate-pulse'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>{isSpectatingOpponent ? 'My Board' : 'Live View Opponent'}</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Opponent Locked Notice when User is still playing */}
+      {!userPlayer.isLocked && opponentPlayer && opponentPlayer.isLocked && (
+        <div className="bg-emerald-950/80 border border-emerald-500/60 rounded-xl p-2.5 shadow-lg flex items-center gap-2 text-xs text-emerald-200">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+          <span className="font-semibold">
+            Opponent {opponentPlayer.username} locked out at {formatScore(opponentPlayer.score)}! Keep pushing to maximize your score!
           </span>
         </div>
       )}

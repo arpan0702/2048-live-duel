@@ -11,7 +11,18 @@ export interface TileData {
 
 export type Grid = (TileData | null)[][];
 
-export type GameMode = 'sudden_death' | 'blitz_3m' | 'blitz_5m' | 'solo_endless';
+export interface SerializedTile {
+  id: string;
+  value: string; // BigInt string
+  row: number;
+  col: number;
+  isNew?: boolean;
+  isMerged?: boolean;
+}
+
+export type SerializedGrid = (SerializedTile | null)[][];
+
+export type GameMode = 'classic_duel' | 'sudden_death' | 'blitz_3m' | 'blitz_5m' | 'solo_endless';
 
 export interface UserProfile {
   id: string; // UUID
@@ -31,6 +42,7 @@ export interface PlayerState {
   score: string; // BigInt string
   highestTile: string; // BigInt string
   isLocked: boolean;
+  grid?: SerializedGrid;
   graceTimeRemaining?: number; // For sudden death 60s countdown
 }
 
@@ -57,6 +69,7 @@ export interface ScoreUpdatePayload {
   score: string;
   highestTile: string;
   isLocked: boolean;
+  grid?: SerializedGrid;
 }
 
 export type RealtimeMessage =
@@ -66,7 +79,7 @@ export type RealtimeMessage =
   | { type: 'player_ready'; roomCode: string; userId: string }
   | { type: 'start_match'; roomCode: string; mode: GameMode; startTime: number }
   | { type: 'score_update'; roomCode: string; payload: ScoreUpdatePayload }
-  | { type: 'player_locked'; roomCode: string; userId: string; finalScore: string; finalHighestTile: string }
+  | { type: 'player_locked'; roomCode: string; userId: string; finalScore: string; finalHighestTile: string; grid?: SerializedGrid }
   | { type: 'sudden_death_start'; roomCode: string; lockedUserId: string; targetScore: string }
   | { type: 'match_finished'; roomCode: string; winnerId: string | null; reason: string }
   | { type: 'player_quit'; roomCode: string; userId: string }

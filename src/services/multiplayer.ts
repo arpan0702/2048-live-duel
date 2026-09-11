@@ -1,6 +1,6 @@
 import mqtt, { type MqttClient } from 'mqtt';
 import { supabase, isSupabaseConfigured } from './supabase';
-import type { GameMode, PlayerState, RealtimeMessage, RoomState, ScoreUpdatePayload, UserProfile } from '../types/game';
+import type { GameMode, PlayerState, RealtimeMessage, RoomState, ScoreUpdatePayload, SerializedGrid, UserProfile } from '../types/game';
 import { leaderboard } from './leaderboard';
 
 type RoomCallback = (room: RoomState) => void;
@@ -20,6 +20,7 @@ class MultiplayerService {
   private broadcastChannel: BroadcastChannel | null = null;
   private supabaseChannel: any = null;
   private mqttClient: MqttClient | null = null;
+  private pendingMqttMessages: { topic: string; payload: string }[] = [];
 
   // Listeners
   private roomCallbacks: Set<RoomCallback> = new Set();
@@ -131,13 +132,25 @@ class MultiplayerService {
     // Sync with Supabase rooms table if configured
     if (isSupabaseConfigured && supabase) {
       try {
-        await supabase.from('rooms').insert({
-          room_code: roomCode,
-          status: 'waiting',
-          player1_id: host.id,
-          player1_score: 0,
-          player2_score: 0,
-        });
+        await supabase.from('users').upsert(
+          {
+            id: host.id,
+            username: host.username,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        );
+
+        await supabase.from('rooms').upsert(
+          {
+            room_code: roomCode,
+            status: 'waiting',
+            player1_id: host.id,
+            player1_score: 0,
+            player2_score: 0,
+          },
+          { onConflict: 'room_code' }
+        );
       } catch (err) {
         console.warn('Supabase createRoom fallback:', err);
       }
@@ -156,7 +169,7 @@ class MultiplayerService {
       } else {
         clearInterval(this.hostAnnounceInterval);
       }
-    }, 1500);
+    }, 1000);
 
     this.notifyRoom();
     return newRoom;
@@ -170,9 +183,6 @@ class MultiplayerService {
     const cleanCode = roomCode.trim().toUpperCase().replace('#', '');
     this.currentUserId = guest.id;
 
-    // Connect to channels first so we can communicate with the host across devices
-    await this.setupChannels(cleanCode);
-
     // Check if room state is already present locally
     let room: RoomState | null = null;
     const localRaw = localStorage.getItem(`room_${cleanCode}`);
@@ -182,11 +192,51 @@ class MultiplayerService {
       } catch {}
     }
 
+    // Connect to channels first so we can communicate with the host across devices
+    await this.setupChannels(cleanCode);
+
+    // If not found locally and Supabase is configured, check database
+    if ((!room || room.status !== 'waiting') && isSupabaseConfigured && supabase) {
+      try {
+        const { data: dbRoom } = await supabase
+          .from('rooms')
+          .select('*, player1:users!rooms_player1_id_fkey(username, all_time_high_score, highest_tile_achieved)')
+          .eq('room_code', cleanCode)
+          .maybeSingle();
+
+        if (dbRoom && dbRoom.status === 'waiting') {
+          const hostUsername = dbRoom.player1?.username || 'Host';
+          const hostHigh = (dbRoom.player1?.all_time_high_score ?? '0').toString();
+          const hostTile = (dbRoom.player1?.highest_tile_achieved ?? '2').toString();
+
+          room = {
+            id: dbRoom.id || `room-${Date.now()}`,
+            roomCode: cleanCode,
+            mode: (dbRoom.mode as GameMode) || 'classic_duel',
+            status: 'waiting',
+            hostId: dbRoom.player1_id,
+            player1: {
+              userId: dbRoom.player1_id,
+              username: hostUsername,
+              allTimeHighScore: hostHigh,
+              highestTileAchieved: hostTile,
+              score: '0',
+              highestTile: '2',
+              isLocked: false,
+            },
+          };
+          this.currentRoom = room;
+        }
+      } catch (err) {
+        console.warn('Supabase joinRoom fetch fallback:', err);
+      }
+    }
+
     // If not immediately available locally, request room state across the network
     if (!room || room.status !== 'waiting') {
       room = await new Promise<RoomState>((resolve, reject) => {
         let attempts = 0;
-        const maxAttempts = 8; // 8 x 500ms = 4 seconds discovery window
+        const maxAttempts = 10; // 10 x 500ms = 5 seconds discovery window
 
         const checkInterval = setInterval(() => {
           attempts++;
@@ -255,6 +305,15 @@ class MultiplayerService {
     // Sync with Supabase rooms table if configured
     if (isSupabaseConfigured && supabase) {
       try {
+        await supabase.from('users').upsert(
+          {
+            id: guest.id,
+            username: guest.username,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        );
+
         await supabase
           .from('rooms')
           .update({
@@ -296,57 +355,88 @@ class MultiplayerService {
     } catch {}
 
     // 2. Cross-Device Public WebSocket MQTT Transport
-    try {
-      if (typeof window !== 'undefined' && !this.mqttClient) {
-        const client = mqtt.connect(PRIMARY_BROKER, {
-          clientId: `duel_${Math.random().toString(16).substring(2, 10)}`,
-          keepalive: 30,
-          clean: true,
-          reconnectPeriod: 2000,
-        });
+    const connectPromise = new Promise<void>((resolve) => {
+      try {
+        if (typeof window !== 'undefined' && !this.mqttClient) {
+          const client = mqtt.connect(PRIMARY_BROKER, {
+            clientId: `duel_${Math.random().toString(16).substring(2, 10)}`,
+            keepalive: 30,
+            clean: true,
+            reconnectPeriod: 2000,
+          });
 
-        this.mqttClient = client;
+          this.mqttClient = client;
 
-        client.on('connect', () => {
-          client.subscribe(topic, { qos: 0 });
-        });
-
-        client.on('message', (receivedTopic, payload) => {
-          if (receivedTopic === topic) {
-            try {
-              const msg: RealtimeMessage = JSON.parse(payload.toString());
-              this.handleMessage(msg);
-            } catch {}
-          }
-        });
-
-        client.on('error', () => {
-          // Fallback broker if primary is unreachable
-          try {
-            if (this.mqttClient === client) {
-              client.end(true);
-              this.mqttClient = mqtt.connect(FALLBACK_BROKER, {
-                clientId: `duel_${Math.random().toString(16).substring(2, 10)}`,
-                keepalive: 30,
-                clean: true,
-              });
-              this.mqttClient.on('connect', () => {
-                this.mqttClient?.subscribe(topic, { qos: 0 });
-              });
-              this.mqttClient.on('message', (t, p) => {
-                if (t === topic) {
-                  try {
-                    this.handleMessage(JSON.parse(p.toString()));
-                  } catch {}
-                }
+          client.on('connect', () => {
+            client.subscribe(topic, { qos: 0 });
+            // Flush queued messages
+            if (this.pendingMqttMessages.length > 0) {
+              const pending = [...this.pendingMqttMessages];
+              this.pendingMqttMessages = [];
+              pending.forEach(({ topic: t, payload: p }) => {
+                try {
+                  client.publish(t, p, { qos: 0 });
+                } catch {}
               });
             }
-          } catch {}
-        });
+            resolve();
+          });
+
+          client.on('message', (receivedTopic, payload) => {
+            if (receivedTopic === topic) {
+              try {
+                const msg: RealtimeMessage = JSON.parse(payload.toString());
+                this.handleMessage(msg);
+              } catch {}
+            }
+          });
+
+          client.on('error', () => {
+            try {
+              if (this.mqttClient === client) {
+                client.end(true);
+                this.mqttClient = mqtt.connect(FALLBACK_BROKER, {
+                  clientId: `duel_${Math.random().toString(16).substring(2, 10)}`,
+                  keepalive: 30,
+                  clean: true,
+                });
+                this.mqttClient.on('connect', () => {
+                  this.mqttClient?.subscribe(topic, { qos: 0 });
+                  if (this.pendingMqttMessages.length > 0) {
+                    const pending = [...this.pendingMqttMessages];
+                    this.pendingMqttMessages = [];
+                    pending.forEach(({ topic: t, payload: p }) => {
+                      try {
+                        this.mqttClient?.publish(t, p, { qos: 0 });
+                      } catch {}
+                    });
+                  }
+                  resolve();
+                });
+                this.mqttClient.on('message', (t, p) => {
+                  if (t === topic) {
+                    try {
+                      this.handleMessage(JSON.parse(p.toString()));
+                    } catch {}
+                  }
+                });
+              }
+            } catch {}
+          });
+        } else if (this.mqttClient && this.mqttClient.connected) {
+          this.mqttClient.subscribe(topic, { qos: 0 });
+          resolve();
+        } else {
+          resolve();
+        }
+      } catch (e) {
+        console.warn('MQTT init error:', e);
+        resolve();
       }
-    } catch (e) {
-      console.warn('MQTT init error:', e);
-    }
+
+      // Safety timeout: don't block for more than 800ms
+      setTimeout(resolve, 800);
+    });
 
     // 3. Supabase Realtime Channel if configured
     if (isSupabaseConfigured && supabase) {
@@ -362,6 +452,9 @@ class MultiplayerService {
           .subscribe();
       } catch {}
     }
+
+    // Await MQTT connection or timeout
+    await connectPromise;
 
     // Periodic ping for latency measurement
     if (this.pingInterval) clearInterval(this.pingInterval);
@@ -382,11 +475,17 @@ class MultiplayerService {
     }
 
     // 2. MQTT over WebSocket
-    if (this.mqttClient && this.mqttClient.connected && this.currentRoom) {
-      try {
-        const topic = `2048duel/v1/${this.currentRoom.roomCode}`;
-        this.mqttClient.publish(topic, JSON.stringify(msg), { qos: 0 });
-      } catch {}
+    const roomCode = 'roomCode' in msg && msg.roomCode ? msg.roomCode : this.currentRoom?.roomCode;
+    if (roomCode) {
+      const topic = `2048duel/v1/${roomCode}`;
+      const payload = JSON.stringify(msg);
+      if (this.mqttClient && this.mqttClient.connected) {
+        try {
+          this.mqttClient.publish(topic, payload, { qos: 0 });
+        } catch {}
+      } else if (this.mqttClient) {
+        this.pendingMqttMessages.push({ topic, payload });
+      }
     }
 
     // 3. Supabase
@@ -450,10 +549,12 @@ class MultiplayerService {
             this.currentRoom.player1.score = payload.score;
             this.currentRoom.player1.highestTile = payload.highestTile;
             this.currentRoom.player1.isLocked = payload.isLocked;
+            if (payload.grid) this.currentRoom.player1.grid = payload.grid;
           } else if (this.currentRoom.player2?.userId === payload.userId) {
             this.currentRoom.player2.score = payload.score;
             this.currentRoom.player2.highestTile = payload.highestTile;
             this.currentRoom.player2.isLocked = payload.isLocked;
+            if (payload.grid) this.currentRoom.player2.grid = payload.grid;
           }
           this.notifyRoom();
           this.scoreCallbacks.forEach((cb) => cb(payload));
@@ -485,15 +586,20 @@ class MultiplayerService {
             this.currentRoom.player1.isLocked = true;
             this.currentRoom.player1.score = msg.finalScore;
             this.currentRoom.player1.highestTile = msg.finalHighestTile;
+            if (msg.grid) this.currentRoom.player1.grid = msg.grid;
           } else if (this.currentRoom.player2?.userId === msg.userId) {
             this.currentRoom.player2.isLocked = true;
             this.currentRoom.player2.score = msg.finalScore;
             this.currentRoom.player2.highestTile = msg.finalHighestTile;
+            if (msg.grid) this.currentRoom.player2.grid = msg.grid;
           }
           this.notifyRoom();
 
-          // If Sudden Death mode and the other player locks first, trigger sudden death countdown
-          if (this.currentRoom.mode === 'sudden_death') {
+          if (this.currentRoom.mode === 'classic_duel') {
+            if (this.currentRoom.player1.isLocked && this.currentRoom.player2?.isLocked) {
+              this.evaluateClassicDuelWinner();
+            }
+          } else if (this.currentRoom.mode === 'sudden_death') {
             if (!this.currentRoom.suddenDeathGraceActive) {
               this.currentRoom.suddenDeathGraceActive = true;
               this.currentRoom.suddenDeathLockedUserId = msg.userId;
@@ -547,17 +653,19 @@ class MultiplayerService {
   /**
    * Broadcast score update on every merge swipe (< 150ms requirement)
    */
-  public sendScoreUpdate(score: string, highestTile: string, isLocked: boolean) {
+  public sendScoreUpdate(score: string, highestTile: string, isLocked: boolean, grid?: SerializedGrid) {
     if (!this.currentRoom) return;
 
     if (this.currentRoom.player1.userId === this.currentUserId) {
       this.currentRoom.player1.score = score;
       this.currentRoom.player1.highestTile = highestTile;
       this.currentRoom.player1.isLocked = isLocked;
+      if (grid) this.currentRoom.player1.grid = grid;
     } else if (this.currentRoom.player2?.userId === this.currentUserId) {
       this.currentRoom.player2.score = score;
       this.currentRoom.player2.highestTile = highestTile;
       this.currentRoom.player2.isLocked = isLocked;
+      if (grid) this.currentRoom.player2.grid = grid;
     }
 
     const payload: ScoreUpdatePayload = {
@@ -566,6 +674,7 @@ class MultiplayerService {
       score,
       highestTile,
       isLocked,
+      grid,
     };
 
     this.broadcastMessage({
@@ -584,17 +693,19 @@ class MultiplayerService {
   /**
    * Handle board lockout for current user
    */
-  public sendPlayerLocked(finalScore: string, finalHighestTile: string) {
+  public sendPlayerLocked(finalScore: string, finalHighestTile: string, grid?: SerializedGrid) {
     if (!this.currentRoom) return;
 
     if (this.currentRoom.player1.userId === this.currentUserId) {
       this.currentRoom.player1.isLocked = true;
       this.currentRoom.player1.score = finalScore;
       this.currentRoom.player1.highestTile = finalHighestTile;
+      if (grid) this.currentRoom.player1.grid = grid;
     } else if (this.currentRoom.player2?.userId === this.currentUserId) {
       this.currentRoom.player2.isLocked = true;
       this.currentRoom.player2.score = finalScore;
       this.currentRoom.player2.highestTile = finalHighestTile;
+      if (grid) this.currentRoom.player2.grid = grid;
     }
 
     this.broadcastMessage({
@@ -603,11 +714,16 @@ class MultiplayerService {
       userId: this.currentUserId,
       finalScore,
       finalHighestTile,
+      grid,
     });
 
     this.notifyRoom();
 
-    if (this.currentRoom.mode === 'sudden_death') {
+    if (this.currentRoom.mode === 'classic_duel') {
+      if (this.currentRoom.player1.isLocked && this.currentRoom.player2?.isLocked) {
+        this.evaluateClassicDuelWinner();
+      }
+    } else if (this.currentRoom.mode === 'sudden_death') {
       if (!this.currentRoom.suddenDeathGraceActive) {
         this.currentRoom.suddenDeathGraceActive = true;
         this.currentRoom.suddenDeathLockedUserId = this.currentUserId;
@@ -626,6 +742,32 @@ class MultiplayerService {
         this.evaluateSuddenDeathWinner('Both players locked out.');
       }
     }
+  }
+
+  /**
+   * Evaluate winner of Classic Duel (Normal mode) when both players have locked out
+   */
+  private evaluateClassicDuelWinner() {
+    if (!this.currentRoom || !this.currentRoom.player2) return;
+
+    const p1Score = BigInt(this.currentRoom.player1.score || '0');
+    const p2Score = BigInt(this.currentRoom.player2.score || '0');
+
+    let winnerId: string | null = null;
+    let reason = '';
+
+    if (p1Score > p2Score) {
+      winnerId = this.currentRoom.player1.userId;
+      reason = `${this.currentRoom.player1.username} won with higher score (${p1Score.toLocaleString()} vs ${p2Score.toLocaleString()})!`;
+    } else if (p2Score > p1Score) {
+      winnerId = this.currentRoom.player2.userId;
+      reason = `${this.currentRoom.player2.username} won with higher score (${p2Score.toLocaleString()} vs ${p1Score.toLocaleString()})!`;
+    } else {
+      winnerId = null;
+      reason = `Tied match! Both players scored ${p1Score.toLocaleString()}!`;
+    }
+
+    this.finishMatch(winnerId, reason);
   }
 
   /**

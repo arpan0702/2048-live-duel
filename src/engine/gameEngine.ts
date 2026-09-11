@@ -1,4 +1,4 @@
-import type { Direction, Grid, TileData } from '../types/game';
+import type { Direction, Grid, SerializedGrid, TileData } from '../types/game';
 
 export const GRID_SIZE = 4;
 
@@ -431,4 +431,52 @@ export function getTileVisual(value: bigint): TileVisual {
         glow: 'shadow-purple-500/90 ring-2 ring-white',
       };
   }
+}
+
+/**
+ * Serialize a Grid for JSON network transmission
+ */
+export function serializeGrid(grid: Grid): SerializedGrid {
+  return grid.map((row) =>
+    row.map((tile) =>
+      tile
+        ? {
+            id: tile.id,
+            value: tile.value.toString(),
+            row: tile.row,
+            col: tile.col,
+            isNew: tile.isNew,
+            isMerged: tile.isMerged,
+          }
+        : null
+    )
+  );
+}
+
+/**
+ * Deserialize a SerializedGrid back to Grid with BigInt values
+ */
+export function deserializeGrid(serialized: SerializedGrid | undefined | null): Grid {
+  if (!serialized || !Array.isArray(serialized)) {
+    return createEmptyGrid();
+  }
+  const result: Grid = createEmptyGrid();
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      const item = serialized[r]?.[c];
+      if (item) {
+        result[r][c] = {
+          id: item.id || `tile-${r}-${c}`,
+          value: BigInt(item.value || '2'),
+          row: item.row ?? r,
+          col: item.col ?? c,
+          isNew: item.isNew,
+          isMerged: item.isMerged,
+        };
+      } else {
+        result[r][c] = null;
+      }
+    }
+  }
+  return result;
 }

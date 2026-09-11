@@ -6,16 +6,24 @@ interface GameBoardProps {
   grid: Grid;
   onMove: (direction: Direction) => void;
   disabled?: boolean;
+  isSpectating?: boolean;
+  spectatingUsername?: string;
 }
 
-export const GameBoard: React.FC<GameBoardProps> = ({ grid, onMove, disabled = false }) => {
+export const GameBoard: React.FC<GameBoardProps> = ({
+  grid,
+  onMove,
+  disabled = false,
+  isSpectating = false,
+  spectatingUsername,
+}) => {
   const boardRef = useRef<HTMLDivElement>(null);
   const touchStartCoords = useRef<{ x: number; y: number } | null>(null);
 
   // Keyboard controls: WASD & Arrow Keys
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (disabled) return;
+      if (disabled || isSpectating) return;
 
       let direction: Direction | null = null;
       switch (e.key) {
@@ -49,11 +57,11 @@ export const GameBoard: React.FC<GameBoardProps> = ({ grid, onMove, disabled = f
 
     window.addEventListener('keydown', handleKeyDown, { passive: false });
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onMove, disabled]);
+  }, [onMove, disabled, isSpectating]);
 
   // Touch Swipe gestures with touch-action: none
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (disabled || e.touches.length === 0) return;
+    if (disabled || isSpectating || e.touches.length === 0) return;
     touchStartCoords.current = {
       x: e.touches[0].clientX,
       y: e.touches[0].clientY,
@@ -61,7 +69,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ grid, onMove, disabled = f
   };
 
   const handleTouchEnd = (e: React.TouchEvent) => {
-    if (disabled || !touchStartCoords.current || e.changedTouches.length === 0) return;
+    if (disabled || isSpectating || !touchStartCoords.current || e.changedTouches.length === 0) return;
 
     const endX = e.changedTouches[0].clientX;
     const endY = e.changedTouches[0].clientY;
@@ -99,13 +107,28 @@ export const GameBoard: React.FC<GameBoardProps> = ({ grid, onMove, disabled = f
 
   return (
     <div className="w-full max-w-md mx-auto px-2 flex flex-col items-center">
+      {/* Live Spectating Header Banner */}
+      {isSpectating && (
+        <div className="w-full bg-rose-950/80 border border-rose-600/70 text-rose-200 text-xs font-mono font-bold px-3 py-1.5 rounded-xl mb-2 flex items-center justify-between shadow-lg shadow-rose-950/40 animate-pulse">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
+            <span>🔴 LIVE SPECTATING: {spectatingUsername || 'Opponent'}&apos;s Board</span>
+          </div>
+          <span className="text-[10px] text-rose-300 uppercase tracking-widest bg-rose-900/60 px-1.5 py-0.5 rounded">LIVE MOVES</span>
+        </div>
+      )}
+
       {/* Board Outer Container with touch-action: none to block browser scroll & pull-to-refresh */}
       <div
         ref={boardRef}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         style={{ touchAction: 'none' }}
-        className="relative w-full aspect-square bg-stone-900 border-4 border-stone-800 rounded-2xl p-2 sm:p-3.5 shadow-2xl overflow-hidden select-none"
+        className={`relative w-full aspect-square bg-stone-900 border-4 rounded-2xl p-2 sm:p-3.5 shadow-2xl overflow-hidden select-none transition-all ${
+          isSpectating
+            ? 'border-rose-500/80 shadow-rose-900/30'
+            : 'border-stone-800'
+        }`}
       >
         {/* 4x4 Grid Background Cells */}
         <div className="w-full h-full grid grid-cols-4 grid-rows-4 gap-2 sm:gap-3">
@@ -153,7 +176,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ grid, onMove, disabled = f
         </div>
 
         {/* Disabled / Locked Overlay */}
-        {disabled && (
+        {disabled && !isSpectating && (
           <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px] flex items-center justify-center z-10">
             <span className="text-white font-mono font-bold text-lg bg-stone-900/90 border border-stone-700 px-4 py-2 rounded-xl shadow-xl">
               Board Inactive
@@ -164,9 +187,17 @@ export const GameBoard: React.FC<GameBoardProps> = ({ grid, onMove, disabled = f
 
       {/* Touch / Keyboard hints */}
       <div className="mt-2 text-stone-500 text-[11px] font-mono text-center flex items-center justify-center gap-3">
-        <span>Touch: Swipe In Any Direction</span>
-        <span>•</span>
-        <span>Keyboard: WASD / Arrow Keys</span>
+        {isSpectating ? (
+          <span className="text-rose-400 font-semibold animate-pulse">
+            Watching {spectatingUsername || 'opponent'}&apos;s live gameplay in real time
+          </span>
+        ) : (
+          <>
+            <span>Touch: Swipe In Any Direction</span>
+            <span>•</span>
+            <span>Keyboard: WASD / Arrow Keys</span>
+          </>
+        )}
       </div>
     </div>
   );

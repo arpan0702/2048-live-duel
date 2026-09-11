@@ -6,6 +6,8 @@ import {
   createEmptyGrid,
   isBoardLocked,
   moveGrid,
+  serializeGrid,
+  deserializeGrid,
   GRID_SIZE,
 } from './gameEngine';
 
@@ -128,6 +130,31 @@ describe('2048 Endless Game Engine', () => {
       expect(result.grid[0][0]?.value).toBe(4n);
       expect(result.grid[0][1]?.value).toBe(4n);
       expect(result.grid[0][2]?.value).toBe(8n);
+    });
+  });
+
+  describe('serializeGrid and deserializeGrid', () => {
+    it('serializes BigInt values to string and deserializes back correctly', () => {
+      const grid = createEmptyGrid();
+      grid[1][2] = { id: 'tile-test-1', value: 2048n, row: 1, col: 2, isNew: true };
+      grid[3][3] = { id: 'tile-test-2', value: 65536n, row: 3, col: 3, isMerged: true };
+
+      const serialized = serializeGrid(grid);
+      expect(serialized[1][2]?.value).toBe('2048');
+      expect(serialized[3][3]?.value).toBe('65536');
+      expect(serialized[0][0]).toBeNull();
+
+      // Ensure JSON.stringify works without BigInt error
+      const jsonStr = JSON.stringify(serialized);
+      expect(jsonStr).toContain('"2048"');
+      expect(jsonStr).toContain('"65536"');
+
+      // Deserialize
+      const reconstructed = deserializeGrid(JSON.parse(jsonStr));
+      expect(reconstructed[1][2]?.value).toBe(2048n);
+      expect(reconstructed[1][2]?.id).toBe('tile-test-1');
+      expect(reconstructed[3][3]?.value).toBe(65536n);
+      expect(reconstructed[0][0]).toBeNull();
     });
   });
 });
